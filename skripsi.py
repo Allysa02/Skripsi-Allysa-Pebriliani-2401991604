@@ -20,34 +20,49 @@ start_date = st.sidebar.date_input("Tanggal Awal", pd.to_datetime("2023-01-01"))
 end_date = st.sidebar.date_input("Tanggal Akhir", pd.to_datetime("today"))
 
 # --- FUNCTION: FETCH & ENGINEER DATA ---
-@st.cache_data
+@st.cache_data(ttl=3600) # TTL 1 jam agar tidak menyimpan error kelamaan
 def load_and_prep_data(ticker, start, end):
-    # 1. Fetch Data
-    df = yf.download(tickers[ticker], start=start, end=end)
-    
-    # Flatten multi-index columns if yfinance returns them
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    try:
+        # 1. Fetch Data menggunakan metode Ticker().history() yang lebih stabil di Cloud
+        stock = yf.Ticker(tickers[ticker])
         
-    df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
-    
-    # 2. Feature Engineering
-    df['SMA_5'] = df['Close'].rolling(window=5).mean()
-    df['SMA_20'] = df['Close'].rolling(window=20).mean()
-    
-    # RSI Calculation (Wilder's Smoothing)
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI_14'] = 100 - (100 / (1 + rs))
-    
-    # Target Variable: Shift Close price by 1 day upwards (H+1)
-    df['Target_Next_Close'] = df['Close'].shift(-1)
-    
-    # Drop rows with NaN (from rolling and shifting)
-    df = df.dropna()
-    return df
+        # Konversi format tanggal ke string agar yfinance tidak bingung
+        start_str = start.strftime('%Y-%m-%d')
+        end_str = end.strftime('%Y-%m-%d')
+        
+        df = stock.history(start=start_str, end=end_str)
+        
+        # Jika Yahoo Finance benar-benar memblokir atau tidak ada data
+        if df.empty:
+            return df
+            
+        # Standardisasi nama kolom (mengantisipasi perubahan versi yfinance)
+        df.columns = df.columns.str.capitalize()
+        
+        # Pilih kolom utama dan buang baris kosong
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+        
+        # 2. Feature Engineering
+        df['SMA_5'] = df['Close'].rolling(window=5).mean()
+        df['SMA_20'] = df['Close'].rolling(window=20).mean()
+        
+        # RSI Calculation (Wilder's Smoothing)
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI_14'] = 100 - (100 / (1 + rs))
+        
+        # Target Variable: Shift Close price by 1 day upwards (H+1)
+        df['Target_Next_Close'] = df['Close'].shift(-1)
+        
+        # Drop rows with NaN (from rolling and shifting)
+        df = df.dropna()
+        return df
+        
+    except Exception as e:
+        st.error(f"Terjadi kesalahan teknis saat mengambil data: {e}")
+        return pd.DataFrame() # Kembalikan dataframe kosong agar ditangkap oleh error handler di bawah
 
 # --- MAIN EXECUTION ---
 if start_date < end_date:
@@ -55,6 +70,7 @@ if start_date < end_date:
     
     if data.empty:
         st.error("Data tidak ditemukan atau rentang waktu terlalu singkat.")
+        st.info("💡 **Tips:** Jika error ini muncul di Streamlit Cloud, ini biasanya karena Yahoo Finance membatasi koneksi (Rate Limit) dari server publik secara sementara. Silakan tunggu beberapa menit dan refresh/muat ulang halaman ini.")
     else:
         st.subheader(f"Dataset Observasi: {selected_ticker}")
         st.dataframe(data.tail())
